@@ -1,64 +1,75 @@
-var Web3 = require('web3');
-var fs = require('fs');
-const crypto = require('crypto');
-const secp256k1 = require('secp256k1');
+const fs = require('fs')
+const Web3 = require('web3')
+const secp256k1 = require('secp256k1')
+const ethUtil = require('ethereumjs-util')
+const ethTx = require('ethereumjs-tx')
 
+const web3 = new Web3('http://localhost:8545')
 
-const optionDefinitions = [
-    { name: 'help', alias: 'h', type: Boolean },
-    { name: 'key', type: String, defaultValue: "./keys/Alice.hex"},
-  //  { name: 'provider', type: String, defaultValue: "http://localhost:8545"},
-    { name: 'value', type: Number, defaultValue: 1.0},
-    { name: 'partner', type: String, defaultValue:"./keys/Bob_addr.hex"},
-    { name: 'ptx', type: String}, //defaultValue: "./txs/tx013.json"},
-    { name: 'tx', type: String}, //defaultValue: "./txs/tx014.json"},
-  ]
+const addressContract = fs.readFileSync('contract.addr').toString().toLocaleLowerCase()
+const addressA = fs.readFileSync('accounts/a.addr').toString().toLocaleLowerCase()
+const addressB = fs.readFileSync('accounts/b.addr').toString().toLocaleLowerCase()
+const privKeyA = Buffer.from(fs.readFileSync('accounts/a.privkey').toString(), 'hex')
+const privKeyB = Buffer.from(fs.readFileSync('accounts/b.privkey').toString(), 'hex')
 
-const commandLineArgs = require('command-line-args')  
-const opts = commandLineArgs(optionDefinitions)
+const contractAbi = JSON.parse(fs.readFileSync('bin/contracts/l2dex.abi'))
+const contract = new web3.eth.Contract(contractAbi, addressContract)
 
-var eth_util = require('ethereumjs-util')
-var Tx = require('ethereumjs-tx');
+const channelId = 1
+const amount = Web3.utils.toWei('0.01', 'ether')
 
-var web3 = new Web3();
-web3.setProvider(new web3.providers.HttpProvider("http://localhost:8545"))
+const channelIdHex = Web3.utils.toHex(channelId).substr(2).padStart(8, '0')
+const amountHex = Web3.utils.toHex(amount).substr(2).padStart(64, '0')
 
-let from = '0xc5c7977789b84bf99b4663b0db9220b7a4abad57';
-let to = '0xed78c89ac96c13b28c0d40e06fe1884ef68cdac9';
-let id = 1;
-let val = 500000000000000000;// web3.toWei("0.1, "ether"); //sum in wei
-let MyPriv = '';
-const leftpad=(s,n)=> "0".repeat(n-s.length)+s;
+const message = addressA.substr(2) + addressB.substr(2) + channelIdHex + amountHex
+console.log(`Message: ${message}`)
 
+const messageHash = ethUtil.sha3(Buffer.from(message, 'hex'))
+const messageHashHex = '0x' + messageHash.toString('hex')
+console.log(`MessageHash: ${messageHashHex}`)
 
-var id_hex = leftpad(web3.toHex(id).substr(2), 64)
-var val_hex = leftpad(web3.toHex(val).substr(2), 64)
+const sig = secp256k1.sign(messageHash, privKeyA) // ?
 
+const r = '0x' + sig.signature.slice(0, 32).toString('hex');
+const s = '0x' + sig.signature.slice(32, 64).toString('hex');
+const v = sig.recovery + 27;
 
-let msg = from.substr(2)
-+to.substr(2)
-+id_hex 
-+val_hex;
-
-console.log('msg',msg)
-
-let hash = eth_util.sha3(new Buffer(msg,'hex'))
-let hash_hex = '0x'+hash.toString('hex')
-
-console.log('hash',hash_hex);
-
-var sig = secp256k1.sign(hash, MyPriv);
-
-let r = '0x'+sig.signature.slice(0, 32).toString('hex');
-let s = '0x'+sig.signature.slice(32, 64).toString('hex');
-let v = sig.recovery + 27;
-
-let tx={
-	id:id,
-	from:from,to:to,
-	val:val,	
-	v:v,r:r,s:s
+const transaction = {
+    from: addressA,
+    to: addressB,
+    channelId: channelId,
+    amount: amount,	
+    v: v,
+    r: r,
+    s: s,
 }
 
-console.log('tx',tx);
-fs.writeFileSync('./tx.json',JSON.stringify(tx))
+console.log('Transaction:', transaction)
+fs.writeFileSync('tx.json', JSON.stringify(transaction))
+
+web3.eth.getTransactionCount(addressA).then(nonce => {
+    const bytecode = contract.methods.pushOffChain(
+        transaction.from,
+        transaction.channelId,
+        transaction.amount,
+        transaction.to,
+        transaction.v,
+        transaction.r,
+        transaction.s
+    ).encodeABI()
+    var tx = new ethTx({
+        nonce: Web3.utils.toHex(nonce),
+        gasPrice: Web3.utils.toHex(Web3.utils.toWei('10', 'gwei')),
+        gasLimit: Web3.utils.toHex(1000000),
+        to: addressContract,
+        from: addressA,
+        data: bytecode,
+    })
+    tx.sign(privKeyA)
+    var txSerialized = tx.serialize()
+    web3.eth.sendSignedTransaction('0x' + txSerialized.toString('hex')).then(txHash => {
+        console.log(`Transaction pushed off chain from ${addressA} with transaction ${txHash}`)
+    }).catch(err => {
+        console.log(`Unable to push off chain transaction from ${addressA}: ${err}`)
+    })
+})
