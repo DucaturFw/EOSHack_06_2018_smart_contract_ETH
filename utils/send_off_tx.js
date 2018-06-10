@@ -47,6 +47,8 @@ const transaction = {
 console.log('Transaction:', transaction)
 fs.writeFileSync('tx.json', JSON.stringify(transaction))
 
+
+// send to chain - if needed 
 web3.eth.getTransactionCount(addressA).then(nonce => {
     const bytecode = contract.methods.pushOffChain(
         transaction.from,
